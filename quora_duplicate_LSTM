@@ -1,0 +1,132 @@
+# -*- coding:utf-8 -*-
+from __future__ import print_function
+import re
+import numpy as np
+from keras import utils
+
+f=open('quora_duplicate_questions.tsv','r',encoding='utf-8')
+
+def remove(text):
+    return (re.sub(r'""', "", text))
+
+EMBED_DIM = 64
+HIDDEN_DIM = 100
+BATCH_SIZE = 32
+NBR_EPOCHS = 1
+vocab=[]
+q1=[]
+q2=[]
+Output=[]
+for line in f.readlines()[1:]:
+    line=line.strip('\n').split('\t')
+    if(len(line)>5):
+        st1=re.split('[? /().,]',remove(line[3]).lower())
+        st2=re.split('[?/() .,]',remove(line[4]).lower())
+        q1.append(st1)
+        q2.append(st2)
+        for i in st1:
+            vocab.append(i)
+        for i in st2:
+            vocab.append(i)
+        #print(line[5])
+        Output.append([int(line[5])])
+
+vocab=list(set(vocab))
+
+word_to_indices=dict((w,i) for i,w in enumerate(vocab))
+
+indices_to_word=dict((i,w) for i,w in enumerate(vocab))
+Input1=[]
+Input2=[]
+lenlist=[]
+for i in q1+q2:
+    lenlist.append(len(i))
+max_words=max(lenlist)
+for i in q1:
+    tmplist=[]
+    if len(i)>max_words:
+        i=i[:max_words]
+    if len(i)<max_words:
+        i+=['@']*(max_words-len(i))
+    for j in i:
+        tmplist.append(word_to_indices[j])
+    Input1.append([tmplist])
+for i in q2:
+    tmplist=[]
+    if len(i)>max_words:
+        i=i[:max_words]
+    if len(i)<max_words:
+        i+=['@']*(max_words-len(i))
+    for j in i:
+        tmplist.append(word_to_indices[j])
+    Input2.append([tmplist])   
+Input1=np.array(Input1)
+Input2=np.array(Input2)
+Output=np.array(Output)
+#Output=utils.to_categorical(Output,2)
+def generate(batch_size,x_train,y_train,Output):
+    ylen = len(y_train)
+    loopcount = ylen // (batch_size)
+    while(True):
+        i = randint(0,loopcount)
+        x,y,output=x_train[i * batch_size:(i + 1) * batch_size], y_train[i * batch_size:(i + 1) * batch_size],Output[i * batch_size:(i + 1) * batch_size]
+        yield [x,y],[output]
+from keras import backend as K
+def Angle(inputs):
+
+    length_input_1=K.sqrt(K.sum(tf.pow(inputs[0],2),axis=1,keepdims=True))
+    length_input_2=K.sqrt(K.sum(tf.pow(inputs[1],2),axis=1,keepdims=True))
+    result=K.batch_dot(inputs[0],inputs[1],axes=1)/(length_input_1*length_input_2)
+    angle = tf.acos(result)
+    return 1.0-angle
+
+def Distance(inputs):
+
+    s = inputs[0] - inputs[1]
+    output = K.sum(s ** 2,axis=1,keepdims=True)
+    return output 
+
+from keras.models import Model
+from keras.layers import Input,Embedding,Reshape,Bidirectional,LSTM,Lambda,Merge,dot,Dropout
+from keras.layers.core import Dense
+from keras import optimizers
+from keras.callbacks import ModelCheckpoint, ReduceLROnPlateau
+from keras import regularizers
+import tensorflow as tf
+import numpy as np
+from random import randint
+
+import keras
+config = tf.ConfigProto()
+config.gpu_options.allow_growth = True
+sess = tf.Session(config=config)
+with tf.device('/gpu:0'):
+
+   
+    input1 =Input(shape=(1,max_words))
+    x=Embedding(len(vocab), 128, input_length=max_words)(input1)
+    print(x.shape)
+    x=Reshape((max_words,128))(x)
+    print(x.shape)
+    x=Bidirectional(LSTM(128,dropout=0.5))(x)
+
+
+    input2 =Input(shape=(1,max_words))
+    y=Embedding(len(vocab), 128, input_length=max_words)(input2)
+    y=Reshape((max_words,128))(y)
+    y=Bidirectional(LSTM(128,dropout=0.5))(y)
+
+    distance=Lambda(lambda x:Distance(x))([x,y])
+    angle=Lambda(lambda x:Angle(x))([x,y])
+    cos_distance=dot([x,y],axes=1)
+    cos_similarity=Dense(2,activation='softmax', kernel_regularizer=regularizers.l2(0.01),
+                activity_regularizer=regularizers.l1(0.01))(cos_distance)
+    cos_similarity=Dense(1,activation='relu', kernel_regularizer=regularizers.l2(0.01),
+                activity_regularizer=regularizers.l1(0.01))(cos_similarity)
+    reduce_lr = ReduceLROnPlateau(monitor='loss', factor=0.5,
+                  patience=1, min_lr=0.00001)
+    adam=optimizers.Adam(lr=0.002)
+    model=Model([input1,input2],[cos_similarity])
+    model.compile(loss='binary_crossentropy',optimizer=adam,metrics=['accuracy'])
+    model.fit_generator(generate(128,Input1,Input2,Output),steps_per_epoch=512, epochs=500,validation_data=generate(128,Input1,Input2,Output),validation_steps=1,callbacks=[reduce_lr])
+    model.save('lstm_cos.h5')
